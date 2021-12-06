@@ -1,0 +1,273 @@
+import os
+import pandas as pd
+from snakemake.utils import min_version
+
+###################################################################################
+
+#NOTES:
+
+#snakemake \
+#    --use-conda \
+#    --cluster 'qsub -V -cwd -S /bin/bash -pe smp {threads} -o {log}.log -j y -q all.q' \
+#    --jobs 20 \
+#    --latency-wait 200 \
+#    --rerun-incomplete \
+#    --keep-going \
+#    --snake code/process_seq_data.snake 
+
+#using
+# - snakemake v6.12.1
+# - using conda v4.10.3
+
+# a small modification needs to be made to the rsync code to get data from ncbi
+# To resolve the error "rsync_from_ncbi.pl: unexpected FTP path (new server?)"
+# replace in the file "libexec/rsync_from_ncbi.pl " "^ftp://" by "^https:// " in line 46.
+
+# nano ~/miniconda3/envs/pathogen_probes-process_seq_data/libexec/rsync_from_ncbi.pl
+
+###################################################################################
+##### set minimum snakemake version #####
+min_version("6.12.1")
+
+#set main project dir and work from there
+proj_dir    = "/master/nplatt/pathogen_probes"
+data_dir    = "{}/data".format(proj_dir)
+results_dir = "{}/results".format(proj_dir)
+envs_dir    = "{}/env".format(proj_dir)
+logs_dir    = "{}/logs".format(results_dir)
+
+#get sample info
+samples_df  = pd.read_csv("{}/seq_data/sample_info.csv".format(data_dir))
+samples     = list(samples_df["sample_id"])
+
+localrules:
+    all,
+
+rule all:
+    input:
+        expand("{dir}/seq_data/{id}_{read}.fastq.gz", dir  = data_dir,
+                                                      id   = samples, 
+                                                      read = ["R1", "R2"] ),
+        expand("{dir}/filtered_reads/{id}_filtered_{read}.fq.gz", dir  = results_dir,
+                                                                  id   = samples,
+                                                                  read = ["R1", "R2"]),
+        expand("{dir}/fastqc/{id}_{read}_fastqc.{ext}", dir  = results_dir, 
+                                                        id   = samples, 
+                                                        read = ["R1", "R2"],
+                                                        ext  = ["zip", "html"] ),
+        expand("{dir}/control_kraken2/{id}_kraken_report_conf{conf}.tbl", dir  = results_dir,
+                                                                          id   = samples,
+                                                                          conf = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 
+                                                                                  0.6, 0.7, 0.8, 0.9, 1.0]),
+        expand("{dir}/control_kraken2/{id}_kraken_per_read_info_conf{conf}.tsv", dir  = results_dir,
+                                                                                 id   = samples,
+                                                                                 conf = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 
+                                                                                         0.6, 0.7, 0.8, 0.9, 1.0]),
+        expand("{dir}/bbsplit/{id}_{ref}.bam", dir = results_dir,
+                                               id  = samples,
+                                               ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
+                                                      "pla_fal", "pla_viv", "mus_mus", "hom_sap" ]),
+        expand("{dir}/bbsplit/{id}_refstats.file", dir = results_dir,
+                                                   id  = samples),
+        expand("{dir}/bbsplit/{id}_{ref}_sorted.bam", dir = results_dir,
+                                                      id  = samples,
+                                                      ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
+                                                             "pla_fal", "pla_viv", "mus_mus", "hom_sap" ])
+
+        
+rule filter_reads:
+    input:
+        r1           = data_dir + "/seq_data/{id}_R1.fastq.gz",
+        r2           = data_dir + "/seq_data/{id}_R2.fastq.gz",
+        adapter_file = data_dir + "/adapters.fas"
+    output:
+        r1_pe = results_dir + "/filtered_reads/{id}_filtered_R1.fq.gz",
+        r2_pe = results_dir + "/filtered_reads/{id}_filtered_R2.fq.gz",
+        r1_se = temp(results_dir + "/filtered_reads/{id}_filtered_R1_SE.fq.gz"),
+        r2_se = temp(results_dir + "/filtered_reads/{id}_filtered_R2_SE.fq.gz"),
+        rx_se = results_dir + "/filtered_reads/{id}_filtered_RX.fq.gz"
+    threads:
+        4
+    log:
+        logs_dir + "/filter_reads#{id}"
+    conda:
+        envs_dir + "/pathogen_probes-trimmomatic.yml"
+    shell:
+        """
+        trimmomatic \
+            PE \
+            -threads {threads} \
+            -phred33 \
+            {input.r1} \
+            {input.r2} \
+            {output.r1_pe} \
+            {output.r1_se} \
+            {output.r2_pe} \
+            {output.r2_se} \
+            LEADING:10 \
+            TRAILING:10 \
+            SLIDINGWINDOW:4:15 \
+            MINLEN:36 \
+            ILLUMINACLIP:{input.adapter_file}:2:30:10:1:true
+
+        zcat {output.r1_se} {output.r2_se} | gzip >{output.rx_se} 
+        """
+
+rule fastqc:
+    input:
+        r1   = data_dir + "/seq_data/{id}_R1.fastq.gz",
+        r2   = data_dir + "/seq_data/{id}_R2.fastq.gz"
+    output:
+        results_dir + "/fastqc/{id}_R1_fastqc.zip",
+        results_dir + "/fastqc/{id}_R2_fastqc.zip",
+        results_dir + "/fastqc/{id}_R1_fastqc.html",
+        results_dir + "/fastqc/{id}_R2_fastqc.html"
+    threads:
+        4
+    log:
+        logs_dir + "/fastqc#{id}"
+    conda:
+        envs_dir + "/pathogen_probes-fastqc.yml"
+    shell:
+        """
+        fastqc \
+            -o {results_dir}/fastqc \
+            -t {threads} \
+            -f fastq \
+            {input.r1} \
+            {input.r2}
+        """
+
+rule kraken:
+    input:
+        r1_pe = results_dir + "/filtered_reads/{id}_filtered_R1.fq.gz",
+        r2_pe = results_dir + "/filtered_reads/{id}_filtered_R2.fq.gz"
+    output:
+        report = results_dir + "/control_kraken2/{id}_kraken_report_conf{conf}.tbl",
+        table  = results_dir + "/control_kraken2/{id}_kraken_per_read_info_conf{conf}.tsv"
+    params:
+        kraken_db="results/control_kraken2/control_kraken2_db"
+    threads:
+        4
+    log:
+        logs_dir + "/kraken_{conf}#{id}"
+    conda:
+        envs_dir + "/pathogen_probes-kraken2_clean.yml"
+    shell:
+        """
+        kraken2 \
+            --use-names \
+            --threads {threads} \
+            --db {params.kraken_db} \
+            --report {output.report} \
+            --paired \
+            --confidence {wildcards.conf} \
+            --output {output.table} \
+            --report-zero-counts \
+            {input.r1_pe} \
+            {input.r2_pe}
+        """
+
+rule bbsplit_index:
+    input:
+        sb = results_dir + "/genomes/sch_bov.fas",
+        sm = results_dir + "/genomes/sch_man.fas",
+        mt = results_dir + "/genomes/myc_tub.fas",
+        mb = results_dir + "/genomes/myc_bov.fas",
+        pf = results_dir + "/genomes/pla_fal.fas",
+        pv = results_dir + "/genomes/pla_viv.fas",
+        mm = results_dir + "/genomes/mus_mus.fas",
+        hs = results_dir + "/genomes/hom_sap.fas"
+    output:
+        touch_file  = results_dir + "/bbsplit/index_build.done",
+    params:
+        build = "1"
+    threads:
+        24
+    log:
+        logs_dir + "/index_build.log"
+    conda:
+        envs_dir + "/pathogen_probes-bbmap.yml"
+    shell:
+        """
+        bbsplit.sh \
+            -Xmx100g \
+            threads={threads} \
+            >{log} 2>&1 \
+        
+        touch {output.touch_file}
+        """
+
+rule bbsplit_map_reads:
+    input:
+        results_dir + "/bbsplit/index_build.done",
+        r1_pe = results_dir + "/filtered_reads/{id}_filtered_R1.fq.gz",
+        r2_pe = results_dir + "/filtered_reads/{id}_filtered_R2.fq.gz"
+    output:
+        results_dir + "/bbsplit/{id}_myc_tub.bam",
+        results_dir + "/bbsplit/{id}_myc_bov.bam",
+        results_dir + "/bbsplit/{id}_pla_fal.bam",
+        results_dir + "/bbsplit/{id}_pla_viv.bam",
+        results_dir + "/bbsplit/{id}_sch_man.bam",
+        results_dir + "/bbsplit/{id}_sch_bov.bam",
+        results_dir + "/bbsplit/{id}_mus_mus.bam",
+        results_dir + "/bbsplit/{id}_hom_sap.bam",
+        stats       = results_dir + "/bbsplit/{id}_refstats.file",
+    params:
+        basename = results_dir + "/bbsplit/{id}_%.bam",
+        gdir     = results_dir + "/genomes",
+        build    = rules.bbsplit_index.params.build
+    threads:
+        12
+    log:
+        logs_dir + "/bbsplit_map_reads#{id}.log",
+    conda:
+        envs_dir + "/pathogen_probes-bbmap.yml"
+    shell:
+        """
+        bbsplit.sh \
+            in1={input.r1_pe} \
+            in2={input.r2_pe} \
+            build={params.build} \
+            overwrite=t \
+            basename={params.basename}\
+            refstats={output.stats} \
+            ambiguous=best \
+            ambiguous2=all \
+            threads={threads} \
+            -Xmx100g \
+            >{log} 2>&1
+        """
+
+
+rule sort_sam:
+    input:
+        results_dir + "/bbsplit/{id}_{ref}.bam"
+    output:
+        results_dir + "/bbsplit/{id}_{ref}_sorted.bam"
+    threads:
+        4
+    log:
+        logs_dir + "/sort_sam#{id}_{ref}.log",
+    conda:
+        envs_dir + "/pathogen_probes-samtools.yml"
+    shell:
+        """
+        samtools sort -O BAM -o {output} {input}
+        """
+
+#start processing in jupyter notebook
+
+
+# bbsplit.sh \
+#     in1=scratch/R1.fq \
+#     in2=scratch/R2.fq \
+#     build=1 \
+#     overwrite=t \
+#     minid=0.8 \
+#     basename=scratch/test_%.sam \
+#     refstats=scratch/test_refstats.file \
+#     ambiguous=all \
+#     ambiguous2=all \
+#     threads=48 \
+#     -Xmx100g

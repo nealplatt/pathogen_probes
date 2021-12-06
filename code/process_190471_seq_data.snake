@@ -1,0 +1,175 @@
+import os
+import pandas as pd
+from snakemake.utils import min_version
+
+###################################################################################
+
+#NOTES:
+
+#snakemake \
+#    --use-conda \
+#    --cluster 'qsub -V -cwd -S /bin/bash -pe smp {threads} -o {log}.log -j y -q all.q' \
+#    --jobs 20 \
+#    --latency-wait 200 \
+#    --rerun-incomplete \
+#    --keep-going \
+#    --snake code/process_seq_data.snake 
+
+#using
+# - snakemake v5.3.0
+# - using conda v4.10.3
+
+# a small modification needs to be made to the rsync code to get data from ncbi
+# To resolve the error "rsync_from_ncbi.pl: unexpected FTP path (new server?)"
+# replace in the file "libexec/rsync_from_ncbi.pl " "^ftp://" by "^https:// " in line 46.
+
+# nano ~/miniconda3/envs/pathogen_probes-process_seq_data/libexec/rsync_from_ncbi.pl
+
+###################################################################################
+##### set minimum snakemake version #####
+min_version("5.3.0")
+
+#set main project dir and work from there
+proj_dir    = "/master/nplatt/pathogen_probes"
+data_dir    = "{}/data".format(proj_dir)
+results_dir = "{}/results".format(proj_dir)
+envs_dir    = "{}/env".format(proj_dir)
+logs_dir    = "{}/logs".format(results_dir)
+
+#get sample info
+samples_df  = pd.read_csv("{}/19047-41/19047-41-sample_key.csv".format(data_dir))
+samples     = list(samples_df["sample_id"])
+
+#print(samples)
+localrules:
+    all
+
+rule all:
+    input:
+        expand("{dir}/19047-41/{id}_{read}.fastq.gz", dir  = data_dir,
+                                                      id   = samples, 
+                                                      read = ["R1", "R2"] ),
+        expand("{dir}/19047-41/filtered_reads/{id}_filtered_{read}.fq.gz", dir  = results_dir,
+                                                                           id   = samples,
+                                                                           read = ["R1", "R2"]),
+        expand("{dir}/19047-41/fastqc/{id}_{read}_fastqc.{ext}", dir  = results_dir, 
+                                                                 id   = samples, 
+                                                                 read = ["R1", "R2"],
+                                                                 ext  = ["zip", "html"] ),
+        expand("{dir}/19047-41/kraken/pathodb_results/{id}_pathodb_kraken_report_conf{conf}.tbl", dir  = results_dir,
+                                                                                                  id   = samples,
+                                                                                                  conf = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 
+                                                                                                          0.6, 0.7, 0.8, 0.9, 1.0]),
+        expand("{dir}/19047-41/kraken/pathodb_results/{id}_pathodb_kraken_per_read_info_conf{conf}.tsv", dir  = results_dir,
+                                                                                                         id   = samples,
+                                                                                                         conf = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 
+                                                                                                                 0.6, 0.7, 0.8, 0.9, 1.0]) 
+        
+rule filter_reads:
+    input:
+        r1           = data_dir + "/19047-41/{id}_R1.fastq.gz",
+        r2           = data_dir + "/19047-41/{id}_R2.fastq.gz",
+        adapter_file = data_dir + "/adapters.fas"
+    output:
+        r1_pe = results_dir + "/19047-41/filtered_reads/{id}_filtered_R1.fq.gz",
+        r2_pe = results_dir + "/19047-41/filtered_reads/{id}_filtered_R2.fq.gz",
+        r1_se = temp(results_dir + "/19047-41/filtered_reads/{id}_filtered_R1_SE.fq.gz"),
+        r2_se = temp(results_dir + "/19047-41/filtered_reads/{id}_filtered_R2_SE.fq.gz"),
+        rx_se = results_dir + "/19047-41/filtered_reads/{id}_filtered_RX.fq.gz"
+    threads:
+        12
+    log:
+        logs_dir + "/filter_reads#{id}"
+    conda:
+        envs_dir + "/pathogen_probes-process_seq_data.yml"
+    shell:
+        """
+        trimmomatic \
+            PE \
+            -threads {threads} \
+            -phred33 \
+            {input.r1} \
+            {input.r2} \
+            {output.r1_pe} \
+            {output.r1_se} \
+            {output.r2_pe} \
+            {output.r2_se} \
+            LEADING:10 \
+            TRAILING:10 \
+            SLIDINGWINDOW:4:15 \
+            MINLEN:36 \
+            ILLUMINACLIP:{input.adapter_file}:2:30:10:1:true
+
+        zcat {output.r1_se} {output.r2_se} | gzip >{output.rx_se} 
+        """
+
+rule fastqc:
+    input:
+        r1   = data_dir + "/19047-41/{id}_R1.fastq.gz",
+        r2   = data_dir + "/19047-41/{id}_R2.fastq.gz"
+    output:
+        results_dir + "/19047-41/fastqc/{id}_R1_fastqc.zip",
+        results_dir + "/19047-41/fastqc/{id}_R2_fastqc.zip",
+        results_dir + "/19047-41/fastqc/{id}_R1_fastqc.html",
+        results_dir + "/19047-41/fastqc/{id}_R2_fastqc.html"
+    threads:
+        12
+    log:
+        logs_dir + "/fastqc#{id}"
+    conda:
+        envs_dir + "/pathogen_probes-process_seq_data.yml"
+    shell:
+        """
+        fastqc \
+            -o {results_dir}/19047-41/fastqc \
+            -t {threads} \
+            -f fastq \
+            {input.r1} \
+            {input.r2}
+        """
+
+rule kraken_build:
+    output:
+        kdb = directory(results_dir + "/19047-41/kraken/pathogen_db_2021-10-20")
+    threads:
+        12
+    log:
+        logs_dir + "/kraken_build"
+    conda:
+        envs_dir + "/pathogen_probes-process_seq_data.yml"
+    shell:
+        """
+        kraken2-build --download-taxonomy --db {output.kdb}
+        kraken2-build --standard --threads {threads} --db {output.kdb}
+        """
+
+rule kraken:
+    input:
+        kdb   = rules.kraken_build.output.kdb,
+        r1_pe = results_dir + "/19047-41/filtered_reads/{id}_filtered_R1.fq.gz",
+        r2_pe = results_dir + "/19047-41/filtered_reads/{id}_filtered_R2.fq.gz"
+    output:
+        report        = results_dir + "/19047-41/kraken/pathodb_results/{id}_pathodb_kraken_report_conf{conf}.tbl",
+        table         = results_dir + "/19047-41/kraken/pathodb_results/{id}_pathodb_kraken_per_read_info_conf{conf}.tsv"
+    threads:
+        12
+    log:
+        logs_dir + "/kraken_{conf}#{id}"
+    conda:
+        envs_dir + "/pathogen_probes-process_seq_data.yml"
+    shell:
+        """
+        kraken2 \
+            --use-names \
+            --threads {threads} \
+            --db {input.kdb} \
+            --report {output.report} \
+            --paired \
+            --confidence {wildcards.conf} \
+            --output {output.table} \
+            --report-zero-counts \
+            {input.r1_pe} \
+            {input.r2_pe}
+        """
+
+#start processing in jupyter notebook.
