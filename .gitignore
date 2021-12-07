@@ -17,3 +17,5 @@ results/
 scratch/
 taxdump.tar.gz
 trash/
+data/SraAccList.txt
+data/decon_probes.fas
