@@ -63,7 +63,7 @@ rule all:
                                                                                  id   = samples,
                                                                                  conf = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 
                                                                                          0.6, 0.7, 0.8, 0.9, 1.0]),
-        expand("{dir}/bbsplit/{id}_{ref}.bam", dir = results_dir,
+        expand("{dir}/bbsplit/{id}_{ref}.sam", dir = results_dir,
                                                id  = samples,
                                                ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
                                                       "pla_fal", "pla_viv", "mus_mus", "hom_sap" ]),
@@ -72,9 +72,16 @@ rule all:
         expand("{dir}/bbsplit/{id}_{ref}_sorted.bam", dir = results_dir,
                                                       id  = samples,
                                                       ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
-                                                             "pla_fal", "pla_viv", "mus_mus", "hom_sap" ])
+                                                             "pla_fal", "pla_viv", "mus_mus", "hom_sap" ]),
+        expand("{dir}/bbsplit/{id}_{ref}_sorted.bam.bai", dir = results_dir,
+                                                          id  = samples,
+                                                          ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
+                                                                 "pla_fal", "pla_viv", "mus_mus", "hom_sap" ]),
+        expand("{dir}/mosdepth/{id}_{ref}.regions.bed.gz", dir = results_dir,
+                                                           id  = samples,
+                                                           ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
+                                                                  "pla_fal", "pla_viv", "mus_mus", "hom_sap" ])
 
-        
 rule filter_reads:
     input:
         r1           = data_dir + "/seq_data/{id}_R1.fastq.gz",
@@ -193,6 +200,7 @@ rule bbsplit_index:
         bbsplit.sh \
             -Xmx100g \
             threads={threads} \
+            ref={input.sb},{input.sm},{input.mt},{input.mb},{input.pf},{input.pv},{input.mm},{input.hs}\
             >{log} 2>&1 \
         
         touch {output.touch_file}
@@ -204,17 +212,17 @@ rule bbsplit_map_reads:
         r1_pe = results_dir + "/filtered_reads/{id}_filtered_R1.fq.gz",
         r2_pe = results_dir + "/filtered_reads/{id}_filtered_R2.fq.gz"
     output:
-        results_dir + "/bbsplit/{id}_myc_tub.bam",
-        results_dir + "/bbsplit/{id}_myc_bov.bam",
-        results_dir + "/bbsplit/{id}_pla_fal.bam",
-        results_dir + "/bbsplit/{id}_pla_viv.bam",
-        results_dir + "/bbsplit/{id}_sch_man.bam",
-        results_dir + "/bbsplit/{id}_sch_bov.bam",
-        results_dir + "/bbsplit/{id}_mus_mus.bam",
-        results_dir + "/bbsplit/{id}_hom_sap.bam",
+        results_dir + "/bbsplit/{id}_myc_tub.sam",
+        results_dir + "/bbsplit/{id}_myc_bov.sam",
+        results_dir + "/bbsplit/{id}_pla_fal.sam",
+        results_dir + "/bbsplit/{id}_pla_viv.sam",
+        results_dir + "/bbsplit/{id}_sch_man.sam",
+        results_dir + "/bbsplit/{id}_sch_bov.sam",
+        results_dir + "/bbsplit/{id}_mus_mus.sam",
+        results_dir + "/bbsplit/{id}_hom_sap.sam",
         stats       = results_dir + "/bbsplit/{id}_refstats.file",
     params:
-        basename = results_dir + "/bbsplit/{id}_%.bam",
+        basename = results_dir + "/bbsplit/{id}_%.sam",
         gdir     = results_dir + "/genomes",
         build    = rules.bbsplit_index.params.build
     threads:
@@ -239,10 +247,9 @@ rule bbsplit_map_reads:
             >{log} 2>&1
         """
 
-
 rule sort_sam:
     input:
-        results_dir + "/bbsplit/{id}_{ref}.bam"
+        results_dir + "/bbsplit/{id}_{ref}.sam"
     output:
         results_dir + "/bbsplit/{id}_{ref}_sorted.bam"
     threads:
@@ -254,6 +261,69 @@ rule sort_sam:
     shell:
         """
         samtools sort -O BAM -o {output} {input}
+        """
+
+rule index_bam:
+    input:
+        results_dir + "/bbsplit/{id}_{ref}_sorted.bam"
+    output:
+        results_dir + "/bbsplit/{id}_{ref}_sorted.bam.bai"
+    threads:
+        1
+    log:
+        logs_dir + "/index_bam#{id}_{ref}.log",
+    conda:
+        envs_dir + "/pathogen_probes-samtools.yml"
+    shell:
+        """
+        samtools index {input}
+        """
+
+rule prep_probe_bed:
+    input:
+        results_dir + "/probe_coords.bed"
+    output:
+        results_dir + "/loci_coords.bed"
+    threads:
+        4
+    log:
+        logs_dir + "/prep_probe_bed.log",
+    conda:
+        envs_dir + "/pathogen_probes-bedtools.yml"
+    shell:
+        """
+        bedtools sort -i results/probe_coords.bed | bedtools merge -i - -d 0 >results/loci_coords.bed
+        """
+
+
+rule mosdepth:
+    input:
+        bai = results_dir + "/bbsplit/{id}_{ref}_sorted.bam.bai",
+        bam = results_dir + "/bbsplit/{id}_{ref}_sorted.bam",
+        bed = results_dir + "/loci_coords.bed"
+    output:
+        temp(results_dir + "/mosdepth/{id}_{ref}.mosdepth.global.dist.txt"),
+        temp(results_dir + "/mosdepth/{id}_{ref}.mosdepth.region.dist.txt"),
+        temp(results_dir + "/mosdepth/{id}_{ref}.regions.bed.gz.csi"),
+        temp(results_dir + "/mosdepth/{id}_{ref}.mosdepth.summary.txt"),
+        results_dir + "/mosdepth/{id}_{ref}.regions.bed.gz"
+    threads:
+        4
+    params:
+        prefix = results_dir + "/mosdepth/{id}_{ref}"
+    log:
+        logs_dir + "/mosdepth#{id}_{ref}.log",
+    conda:
+        envs_dir + "/pathogen_probes-mosdepth.yml"
+    shell:
+        """
+        mosdepth \
+            --threads {threads} \
+            --by {input.bed}  \
+            --no-per-base \
+            {params.prefix} \
+            {input.bam} \
+            >{log} 2>&1
         """
 
 #start processing in jupyter notebook
