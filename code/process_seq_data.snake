@@ -63,23 +63,19 @@ rule all:
                                                                                  id   = samples,
                                                                                  conf = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 
                                                                                          0.6, 0.7, 0.8, 0.9, 1.0]),
-        expand("{dir}/bbmap/{id}_vs_{ref}{ext}", dir = results_dir,
+        expand("{dir}/bbmap-reads/{id}_vs_{ref}{ext}", dir = results_dir,
                                                   id  = samples,
                                                   ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
                                                          "pla_fal", "pla_viv", "mus_mus", "hom_sap" ],
-                                                  ext = ["-MAPPED.fas", "-UNMAPPED.fas", ".bam"]),
-        expand("{dir}/bbmap/{id}_vs_{ref}.sorted.bam", dir = results_dir,
-                                                       id  = samples,
-                                                       ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
-                                                              "pla_fal", "pla_viv", "mus_mus", "hom_sap" ]),
-        expand("{dir}/bbmap/{id}_vs_{ref}.sorted.bam.bai", dir = results_dir,
-                                                           id  = samples,
-                                                           ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
-                                                                  "pla_fal", "pla_viv", "mus_mus", "hom_sap" ]),
-        expand("{dir}/mosdepth/{id}_vs_{ref}.regions.bed.gz", dir = results_dir,
-                                                           id  = samples,
-                                                           ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
-                                                                  "pla_fal", "pla_viv", "mus_mus", "hom_sap" ])
+                                                  ext = ["-MAPPED.fas", "-UNMAPPED.fas", ".bam", ".sorted.bam", ".sorted.bam.bai"]),
+        expand("{dir}/bbmap-probes/probes_vs_{ref}.sorted.bam", dir = results_dir,
+                                                                ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
+                                                                       "pla_fal", "pla_viv", "mus_mus", "hom_sap" ],
+                                                                ext = ["bam", "bam.bai"] ),
+        # expand("{dir}/mosdepth/{id}_vs_{ref}.regions.bed.gz", dir = results_dir,
+        #                                                    id  = samples,
+        #                                                    ref = ["sch_bov", "sch_man", "myc_bov", "myc_tub",
+        #                                                           "pla_fal", "pla_viv", "mus_mus", "hom_sap" ])
 
 
 
@@ -201,22 +197,23 @@ rule bbmap_index:
         touch {output.touch_file}
         """
 
-rule bbmap:
+rule bbmap_reads:
     input:
-        genome = results_dir + "/genomes/{ref}.fas",
-        r1_pe  = results_dir + "/filtered_reads/{id}_filtered_R1.fq.gz",
-        r2_pe  = results_dir + "/filtered_reads/{id}_filtered_R2.fq.gz"
+        rules.bbmap_index.output.touch_file,
+        genome      = results_dir + "/genomes/{ref}.fas",
+        r1_pe       = results_dir + "/filtered_reads/{id}_filtered_R1.fq.gz",
+        r2_pe       = results_dir + "/filtered_reads/{id}_filtered_R2.fq.gz"
     output:
-        mapped_fas   = results_dir + "/bbmap/{id}_vs_{ref}-MAPPED.fas",
-        unmapped_fas = results_dir + "/bbmap/{id}_vs_{ref}-UNMAPPED.fas",
-        bam          =  results_dir + "/bbmap/{id}_vs_{ref}.bam"
+        mapped_fas   = results_dir + "/bbmap-reads/{id}_vs_{ref}-MAPPED.fas",
+        unmapped_fas = results_dir + "/bbmap-reads/{id}_vs_{ref}-UNMAPPED.fas",
+        bam          = temp(results_dir + "/bbmap-reads/{id}_vs_{ref}.bam")
     params:
         build = "1",
         path = results_dir + "/genomes/{ref}"
     threads:
-        4
+        8
     log:
-        logs_dir + "/bbmap#{id}_vs_{ref}.log"
+        logs_dir + "/bbmap_reads#{id}_vs_{ref}.log"
     conda:
         envs_dir + "/pathogen_probes-bbmap.yml"
     shell:
@@ -227,7 +224,6 @@ rule bbmap:
         in={input.r1_pe} \
         in2={input.r2_pe} \
         touppercase=t \
-        slow=t \
         minid=0.8 \
         threads={threads} \
         ambiguous=all \
@@ -241,9 +237,9 @@ rule bbmap:
 
 rule sort_bam:
     input:
-        results_dir + "/bbmap/{id}_vs_{ref}.bam"
+        results_dir + "/bbmap-reads/{id}_vs_{ref}.bam"
     output:
-        results_dir + "/bbmap/{id}_vs_{ref}.sorted.bam"
+        results_dir + "/bbmap-reads/{id}_vs_{ref}.sorted.bam"
     threads:
         4
     log:
@@ -252,18 +248,18 @@ rule sort_bam:
         envs_dir + "/pathogen_probes-samtools.yml"
     shell:
         """
-        samtools sort -O BAM -o {output} {input}
+        samtools view -b -F 4 {input} | samtools sort -O BAM -o {output} 
         """
 
 rule index_bam:
     input:
-        results_dir + "/bbmap/{id}_vs_{ref}.sorted.bam"
+        results_dir + "/bbmap-reads/{id}_vs_{ref}.sorted.bam"
     output:
-        results_dir + "/bbmap/{id}_vs_{ref}.sorted.bam.bai"
+        results_dir + "/bbmap-reads/{id}_vs_{ref}.sorted.bam.bai"
     threads:
         1
     log:
-        logs_dir + "/index_bam#{id}_{ref}.log",
+        logs_dir + "/index_bam#{id}_vs_{ref}.log",
     conda:
         envs_dir + "/pathogen_probes-samtools.yml"
     shell:
@@ -271,50 +267,120 @@ rule index_bam:
         samtools index {input}
         """
 
-rule prep_probe_bed:
+# rule prep_probe_bed:
+#     input:
+#         results_dir + "/probe_coords.bed"
+#     output:
+#         results_dir + "/loci_coords.bed"
+#     threads:
+#         4
+#     log:
+#         logs_dir + "/prep_probe_bed.log",
+#     conda:
+#         envs_dir + "/pathogen_probes-bedtools.yml"
+#     shell:
+#         """
+#         bedtools sort -i results/probe_coords.bed | bedtools merge -i - -d 0 >results/loci_coords.bed
+#         """
+
+
+rule bbmap_probes:
     input:
-        results_dir + "/probe_coords.bed"
+        rules.bbmap_index.output.touch_file,
+        genome    = results_dir + "/genomes/{ref}.fas",
+        probe_fas = proj_dir + "/final_probes_v1.0.fas"
     output:
-        results_dir + "/loci_coords.bed"
+        mapped_fas   = results_dir + "/bbmap-probes/probes_vs_{ref}-MAPPED.fas",
+        unmapped_fas = results_dir + "/bbmap-probes/probes_vs_{ref}-UNMAPPED.fas",
+        bam          = temp(results_dir + "/bbmap-probes/probes_vs_{ref}.bam")
+    params:
+        build = "1",
+        path = results_dir + "/genomes/{ref}"
     threads:
-        4
+        12
     log:
-        logs_dir + "/prep_probe_bed.log",
+        logs_dir + "/bbmap_probes#vs_{ref}.log"
     conda:
-        envs_dir + "/pathogen_probes-bedtools.yml"
+        envs_dir + "/pathogen_probes-bbmap.yml"
     shell:
         """
-        bedtools sort -i results/probe_coords.bed | bedtools merge -i - -d 0 >results/loci_coords.bed
+    bbmap.sh \
+        path={params.path} \
+        build={params.build} \
+        in={input.probe_fas} \
+        touppercase=t \
+        slow=t \
+        minid=0.8 \
+        threads={threads} \
+        ambiguous=best \
+        out={output.bam} \
+        outu={output.unmapped_fas}\
+        outm={output.mapped_fas} \
+        overwrite=t \
+        -Xmx100g \
+        >{log} 2>&1
         """
 
-rule mosdepth:
+rule sort_probe_bam:
     input:
-        bai = results_dir + "/bbmap/{id}_vs_{ref}.sorted.bam.bai",
-        bam = results_dir + "/bbmap/{id}_vs_{ref}.sorted.bam",
-        bed = results_dir + "/loci_coords.bed"
+        results_dir + "/bbmap-probes/probes_vs_{ref}.bam"
     output:
-        temp(results_dir + "/mosdepth/{id}_vs_{ref}.mosdepth.global.dist.txt"),
-        temp(results_dir + "/mosdepth/{id}_vs_{ref}.mosdepth.region.dist.txt"),
-        temp(results_dir + "/mosdepth/{id}_vs_{ref}.regions.bed.gz.csi"),
-        temp(results_dir + "/mosdepth/{id}_vs_{ref}.mosdepth.summary.txt"),
-        results_dir + "/mosdepth/{id}_vs_{ref}.regions.bed.gz"
+        results_dir + "/bbmap-probes/probes_vs_{ref}.sorted.bam"
     threads:
         4
-    params:
-        prefix = results_dir + "/mosdepth/{id}_vs_{ref}"
     log:
-        logs_dir + "/mosdepth#{id}_vs_{ref}.log",
+        logs_dir + "/sort_probe_bam#vs_{ref}.log"
     conda:
-        envs_dir + "/pathogen_probes-mosdepth.yml"
+        envs_dir + "/pathogen_probes-samtools.yml"
     shell:
         """
-        mosdepth \
-            --threads {threads} \
-            --by {input.bed}  \
-            --no-per-base \
-            {params.prefix} \
-            {input.bam} \
-            >{log} 2>&1
+        samtools view -b -F 4 {input} | samtools sort -O BAM -o {output} 
         """
+
+rule index_probe_bam:
+    input:
+        results_dir + "/bbmap-probes/probes_vs_{ref}.sorted.bam"
+    output:
+        results_dir + "/bbmap-probes/probes_vs_{ref}.sorted.bam.bai"
+    threads:
+        1
+    log:
+        logs_dir + "/index_probe_bam#vs_{ref}.log",
+    conda:
+        envs_dir + "/pathogen_probes-samtools.yml"
+    shell:
+        """
+        samtools index {input}
+        """
+
+# rule mosdepth:
+#     input:
+#         reads_bai = results_dir + "/bbmap-reasd/{id}_vs_{ref}.sorted.bam.bai",
+#         reads_bam = results_dir + "/bbmap-reads/{id}_vs_{ref}.sorted.bam",
+#         reads_bed = results_dir + "/loci_coords.bed",
+#     output:
+#         temp(results_dir + "/mosdepth/{id}_vs_{ref}.mosdepth.global.dist.txt"),
+#         temp(results_dir + "/mosdepth/{id}_vs_{ref}.mosdepth.region.dist.txt"),
+#         temp(results_dir + "/mosdepth/{id}_vs_{ref}.regions.bed.gz.csi"),
+#         temp(results_dir + "/mosdepth/{id}_vs_{ref}.mosdepth.summary.txt"),
+#         results_dir + "/mosdepth/{id}_vs_{ref}.regions.bed.gz"
+#     threads:
+#         4
+#     params:
+#         prefix = results_dir + "/mosdepth/{id}_vs_{ref}"
+#     log:
+#         logs_dir + "/mosdepth#{id}_vs_{ref}.log",
+#     conda:
+#         envs_dir + "/pathogen_probes-mosdepth.yml"
+#     shell:
+#         """
+#         mosdepth \
+#             --threads {threads} \
+#             --by {input.bed}  \
+#             --no-per-base \
+#             {params.prefix} \
+#             {input.bam} \
+#             >{log} 2>&1
+#         """
 
 #start processing in jupyter notebook
