@@ -1,9 +1,11 @@
+bin/
+data/ncbi-genomes-2022-06-17
 .ipynb_checkpoints/
 .snakemake/
 code/.ipynb_checkpoints/
 code/datasets
 code/kraken2
-code/unused
+code/unused/*
 data/genomes
 data/ncbi-genomes-2021-03-10
 data/ncbi-genomes-2021-03-24
