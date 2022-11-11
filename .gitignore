@@ -21,3 +21,9 @@ taxdump.tar.gz
 trash/
 data/SraAccList.txt
 data/decon_probes.fas
+data/genome_data/genomes/
+data/genome_data/ncbi-genomes-2021-03-10/
+data/genome_data/ncbi-genomes-2021-03-24/
+data/genome_data/ncbi-genomes-2022-06-17/
+data/genome_data/plasmodium_genomes/
+data/genome_data/schistosoma_genomes/
