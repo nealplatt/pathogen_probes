@@ -1,0 +1,6 @@
+name: kraken
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+prefix: /master/nplatt/anaconda3/envs/kraken
