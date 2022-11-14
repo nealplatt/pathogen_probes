@@ -1,3 +1,6 @@
+[![DOI](https://zenodo.org/badge/354130628.svg)](https://zenodo.org/badge/latestdoi/354130628)
+
+
 # Prospecting for zoonotic pathogens using targeted DNA enrichment
 ##### Elisha Enabulele, Winka Le Clec’h, Emma K. Brookover, Robert D. Bradley, Cody W. Thompson, Timothy J. C. Anderson, Roy N Platt II
 ---------------
